@@ -44,53 +44,25 @@ main :: proc() {
 	buffers: Buffers
 	buffers_init(&buffers, 16 * 1024 * 1024)
 
-	upload_arena := gpu.arena_create(); defer gpu.arena_destroy(&upload_arena)
-	cmd_upload := gpu.commands_begin(.Main)
-
-	pos1 := [][3]f32{{-0.5, -0.5, 0}, {0.5, -0.5, 0}, {0, 0.5, 0}}
-	col1 := [][4]f32{{1, 0, 0, 1}, {0, 1, 0, 1}, {0, 0, 1, 1}}
-	idx1 := []u32{0, 1, 2}
-
-	mesh1 := upload_mesh(
-		&buffers,
-		&upload_arena,
-		cmd_upload,
-		#partial{.POS = make_source(pos1), .IDX = make_source(idx1), .COLOR = make_source(col1)},
-		{.POS, .IDX, .COLOR},
-	)
-	append(&buffers.meshes, mesh1)
-
-	pos2 := [][3]f32{{0.5, -0.5, 0}, {1.5, -0.5, 0}, {1.0, 0.5, 0}}
-	uv2 := [][2]f32{{0, 0}, {1, 0}, {0.5, 1}}
-	idx2 := []u32{0, 1, 2}
-
-	mesh2 := upload_mesh(
-		&buffers,
-		&upload_arena,
-		cmd_upload,
-		#partial{.POS = make_source(pos2), .IDX = make_source(idx2), .UV = make_source(uv2)},
-		{.POS, .IDX, .UV},
-	)
-	append(&buffers.meshes, mesh2)
-
-	gpu.cmd_barrier(cmd_upload, .Transfer, .All)
-	gpu.queue_submit(.Main, {cmd_upload})
+	prepare_scene(&buffers)
+	gpu.wait_idle()
 
 	opaque_pass_shaders := Shader_Pair {
 		.Vertex   = gpu.shader_create(
 			#load("../samples/triangle/triangle.vert.spv", []u32),
 			.Vertex,
+			"vertMain", // Explicitly matches your -entry flag
 		),
 		.Fragment = gpu.shader_create(
 			#load("../samples/triangle/triangle.frag.spv", []u32),
 			.Fragment,
+			"fragMain", // Explicitly matches your -entry flag
 		),
 	}
 	defer for &s in opaque_pass_shaders do gpu.shader_destroy(s)
 
 	ts_freq := sdl.GetPerformanceFrequency()
 	last_ts := sdl.GetPerformanceCounter()
-
 
 	for handle_window_events() {
 		sdl.GetWindowSizeInPixels(window, &win.x, &win.y)
@@ -126,6 +98,40 @@ init_window :: proc() -> (window: ^sdl.Window) {
 	return
 }
 
+prepare_scene :: proc(buffers: ^Buffers) {
+	upload_arena := gpu.arena_create(); defer gpu.arena_destroy(&upload_arena)
+	cmd_upload := gpu.commands_begin(.Main)
+
+	pos1 := [][3]f32{{-0.5, -0.5, 0}, {0.5, -0.5, 0}, {0, 0.5, 0}}
+	col1 := [][4]f32{{1, 0, 0, 1}, {0, 1, 0, 1}, {0, 0, 1, 1}}
+	idx1 := []u32{0, 1, 2}
+
+	mesh1 := upload_mesh(
+		buffers,
+		&upload_arena,
+		cmd_upload,
+		#partial{.POS = make_source(pos1), .IDX = make_source(idx1), .COLOR = make_source(col1)},
+		{.POS, .IDX, .COLOR},
+	)
+	append(&buffers.meshes, mesh1)
+
+	pos2 := [][3]f32{{0.5, -0.5, 0}, {1.5, -0.5, 0}, {1.0, 0.5, 0}}
+	uv2 := [][2]f32{{0, 0}, {1, 0}, {0.5, 1}}
+	idx2 := []u32{0, 1, 2}
+
+	mesh2 := upload_mesh(
+		buffers,
+		&upload_arena,
+		cmd_upload,
+		#partial{.POS = make_source(pos2), .IDX = make_source(idx2), .UV = make_source(uv2)},
+		{.POS, .IDX, .UV},
+	)
+	append(&buffers.meshes, mesh2)
+
+	gpu.cmd_barrier(cmd_upload, .Transfer, .All)
+	gpu.queue_submit(.Main, {cmd_upload})
+
+}
 
 handle_window_events :: proc() -> bool {
 	evt: sdl.Event

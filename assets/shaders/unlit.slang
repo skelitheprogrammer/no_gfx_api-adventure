@@ -15,7 +15,6 @@ struct GlobalData {
 
 struct DrawData {
   uint set;
-  uint _pad;
   uint offsets[STREAM_COUNT];
 };
 
