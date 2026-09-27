@@ -1,56 +1,51 @@
-import "../shaders/shared/shared.slang";
+import "shared/shared.slang";
 
-#define PAGE_SIZE_VERTS 128
-#define PAGE_SIZE_IDX 128
+#define STREAM_POS 0
+#define STREAM_IDX 1
+#define STREAM_UV 2
+#define STREAM_COLOR 3
+#define STREAM_NORMAL 4
+#define STREAM_TANGENT 5
+#define STREAM_COUNT 6
 
-public struct VirtualGeometryData {
-  public uint64_t pos_pool;
-  public uint64_t col_pool;
-  public uint64_t idx_pool;
-  public float4x4 view_proj;
-}
+struct GlobalData {
+  uint8_t *streams[STREAM_COUNT];
+  float4x4 view_proj;
+};
 
-public struct DrawUserData {
-  public uint pos_page;
-  public uint col_page;
-  public uint idx_page;
-}
+struct DrawData {
+  uint set;
+  uint _pad;
+  uint offsets[STREAM_COUNT];
+};
 
-struct VSOutput {
-  float4 position : SV_Position;
-  float4 color : COLOR0;
-}
+struct VertexOutput {
+  float4 pos : SV_Position;
+  float4 color : TEXCOORD0;
+};
 
 [shader("vertex")]
-VSOutput vertMain(uint vertex_id: SV_VertexID,
-                 GraphicsPipelineData<VirtualGeometryData, void, DrawUserData>
-                     pipeline_data) {
-  VSOutput output;
+VertexOutput vertMain(uint vertex_index: SV_VertexID,
+                        GraphicsPipelineData<DrawData, GlobalData, void> data) {
+  DrawData *draw = data.vert;
+  GlobalData *global = data.frag;
+  VertexOutput out;
 
-  VirtualGeometryData *root = pipeline_data.vert;
+  uint idx = vertex_index;
 
-  DrawUserData draw_data = pipeline_data.drawData;
+  float3 *pos_buffer = (float3 *)global->streams[STREAM_POS];
+  float3 pos = pos_buffer[draw->offsets[STREAM_POS] + idx];
+  out.pos = mul(global->view_proj, float4(pos, 1.0));
 
-  float4 *pos_pool = (float4 *)root->pos_pool;
-  float4 *col_pool = (float4 *)root->col_pool;
-  uint *idx_pool = (uint *)root->idx_pool;
+  if ((draw->set & (1u << STREAM_COLOR)) != 0u) {
+    float4 *col_buffer = (float4 *)global->streams[STREAM_COLOR];
+    out.color = col_buffer[draw->offsets[STREAM_COLOR] + idx];
+  } else {
+    out.color = float4(1, 1, 1, 1);
+  }
 
-  uint local_idx = vertex_id;
-
-  uint base_idx_offset = draw_data.idx_page * PAGE_SIZE_IDX;
-  uint actual_vertex_idx = idx_pool[base_idx_offset + local_idx];
-
-  uint base_vert_offset = draw_data.pos_page * PAGE_SIZE_VERTS;
-  float4 pos = pos_pool[base_vert_offset + actual_vertex_idx];
-
-  uint base_col_offset = draw_data.col_page * PAGE_SIZE_VERTS;
-  float4 col = col_pool[base_col_offset + actual_vertex_idx];
-
-  output.position = mul(root->view_proj, pos);
-  output.color = col;
-
-  return output;
+  return out;
 }
 
 [shader("fragment")]
-float4 fragMain(VSOutput input) : SV_Target { return input.color; }
+float4 fragMain(VertexOutput input) : SV_Target { return input.color; }

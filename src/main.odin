@@ -9,9 +9,9 @@ import "core:os"
 import sdl "vendor:sdl3"
 
 Config :: struct {
-	name: cstring,
-	w:    c.int,
-	h:    c.int,
+	name:   cstring,
+	width:  c.int,
+	height: c.int,
 }
 
 Default_Config := Config{"TheGame", 3440, 1440}
@@ -31,7 +31,7 @@ main :: proc() {
 	defer sdl.DestroyWindow(window)
 
 	scale := sdl.GetWindowDisplayScale(window)
-	win := [2]i32{i32(f32(Default_Config.w) * scale), i32(f32(Default_Config.h) * scale)}
+	win := [2]i32{i32(f32(Default_Config.width) * scale), i32(f32(Default_Config.height) * scale)}
 
 	ensure(gpu.init())
 	defer gpu.cleanup()
@@ -42,12 +42,51 @@ main :: proc() {
 	defer renderer_destroy(&renderer)
 
 	buffers: Buffers
-	buffers_init(&buffers, 1024)
+	buffers_init(&buffers, 16 * 1024 * 1024)
 
-	opaque_pass_shaders := Shader_Pair{}
+	upload_arena := gpu.arena_create(); defer gpu.arena_destroy(&upload_arena)
+	cmd_upload := gpu.commands_begin(.Main)
+
+	pos1 := [][3]f32{{-0.5, -0.5, 0}, {0.5, -0.5, 0}, {0, 0.5, 0}}
+	col1 := [][4]f32{{1, 0, 0, 1}, {0, 1, 0, 1}, {0, 0, 1, 1}}
+	idx1 := []u32{0, 1, 2}
+
+	mesh1 := upload_mesh(
+		&buffers,
+		&upload_arena,
+		cmd_upload,
+		#partial{.POS = make_source(pos1), .IDX = make_source(idx1), .COLOR = make_source(col1)},
+		{.POS, .IDX, .COLOR},
+	)
+	append(&buffers.meshes, mesh1)
+
+	pos2 := [][3]f32{{0.5, -0.5, 0}, {1.5, -0.5, 0}, {1.0, 0.5, 0}}
+	uv2 := [][2]f32{{0, 0}, {1, 0}, {0.5, 1}}
+	idx2 := []u32{0, 1, 2}
+
+	mesh2 := upload_mesh(
+		&buffers,
+		&upload_arena,
+		cmd_upload,
+		#partial{.POS = make_source(pos2), .IDX = make_source(idx2), .UV = make_source(uv2)},
+		{.POS, .IDX, .UV},
+	)
+	append(&buffers.meshes, mesh2)
+
+	gpu.cmd_barrier(cmd_upload, .Transfer, .All)
+	gpu.queue_submit(.Main, {cmd_upload})
+
+	opaque_pass_shaders := Shader_Pair {
+		.Vertex   = gpu.shader_create(
+			#load("../samples/triangle/triangle.vert.spv", []u32),
+			.Vertex,
+		),
+		.Fragment = gpu.shader_create(
+			#load("../samples/triangle/triangle.frag.spv", []u32),
+			.Fragment,
+		),
+	}
 	defer for &s in opaque_pass_shaders do gpu.shader_destroy(s)
-
-	init_data(&buffers)
 
 	ts_freq := sdl.GetPerformanceFrequency()
 	last_ts := sdl.GetPerformanceCounter()
@@ -66,7 +105,7 @@ main :: proc() {
 		cmd, swapchain, arena := frame_begin(&renderer, win) or_break
 
 
-		opaque_pass(cmd, swapchain, arena, opaque_pass_shaders)
+		opaque_pass(cmd, swapchain, arena, &buffers, opaque_pass_shaders)
 
 		frame_end(&renderer, cmd)
 
@@ -78,8 +117,8 @@ main :: proc() {
 init_window :: proc() -> (window: ^sdl.Window) {
 	window = sdl.CreateWindow(
 		Default_Config.name,
-		Default_Config.w,
-		Default_Config.h,
+		Default_Config.width,
+		Default_Config.height,
 		{.VULKAN, .HIGH_PIXEL_DENSITY, .FULLSCREEN},
 	)
 	ensure(window != nil)
@@ -87,16 +126,6 @@ init_window :: proc() -> (window: ^sdl.Window) {
 	return
 }
 
-
-init_data :: proc(b: ^Buffers) {
-	upload := gpu.arena_create()
-	defer gpu.arena_destroy(&upload)
-	cmd := gpu.commands_begin(.Transfer)
-
-
-	gpu.cmd_barrier(cmd, .Transfer, .All)
-	gpu.queue_submit(.Main, {cmd})
-}
 
 handle_window_events :: proc() -> bool {
 	evt: sdl.Event
