@@ -6,77 +6,26 @@ import "core:mem"
 import "gpu/gpu"
 
 
-Vertex_Stream_Type :: enum {
-	POS,
-	COL,
-	IDX,
-	UV,
-}
-
-Vertex_Stream_Set :: bit_set[Vertex_Stream_Type;u32]
-
-@(rodata)
-vertex_stream_meta := [Vertex_Stream_Type]struct {
-	size, alignment: i64,
-} {
-	.POS = {12, 16},
-	.COL = {16, 16},
-	.IDX = {4, 4},
-	.UV  = {8, 8},
-}
-
-Vertex_Stream :: struct {
+Stream_Ref :: struct {
 	offset: u32,
 	count:  u32,
 }
 
-Mesh :: distinct [Vertex_Stream_Type]Vertex_Stream
-
-Vertex_Streams :: distinct [Vertex_Stream_Type]struct {
+Stream_Buffer :: struct {
 	ptr:  gpu.ptr,
 	used: i64,
 }
-
-Mesh_Source :: distinct [Vertex_Stream_Type]Stream_Desc
-
-
-Instance_Stream_Type :: enum {
-	MODEL,
-}
-
-Instance_Stream_Set :: bit_set[Instance_Stream_Type;u32]
-
-@(rodata)
-instance_stream_meta := [Instance_Stream_Type]struct {
-	size, alignment: i64,
-} {
-	.MODEL = {64, 16},
-}
-
-Instance_Stream :: struct {
-	offset: u32,
-	count:  u32,
-}
-
-Instance_Group :: distinct [Instance_Stream_Type]Instance_Stream
-
-Instance_Streams :: distinct [Instance_Stream_Type]struct {
-	ptr:  gpu.ptr,
-	used: i64,
-}
-
-Instance_Source :: distinct [Instance_Stream_Type]Stream_Desc
-
-
-Mesh_ID :: distinct u32
-Instance_ID :: distinct u32
 
 Stream_Desc :: struct {
 	data:               rawptr,
 	size, count, align: i64,
 }
 
-make_desc :: proc(slice: []$T, alignment: i64 = 0) -> Stream_Desc {
+Stream_Meta :: struct {
+	size, alignment: i64,
+}
+
+make_desc :: proc(slice: []$T, alignment: i64 = 16) -> Stream_Desc {
 	return Stream_Desc {
 		data = raw_data(slice),
 		size = size_of(T),
@@ -86,57 +35,105 @@ make_desc :: proc(slice: []$T, alignment: i64 = 0) -> Stream_Desc {
 }
 
 
+Vertex_Stream_Type :: enum {
+	POS,
+	COL,
+	IDX,
+	UV,
+}
+Vertex_Stream_Set :: bit_set[Vertex_Stream_Type;u32]
+
+@(rodata)
+vertex_stream_meta := [Vertex_Stream_Type]Stream_Meta {
+	.POS = {12, 16},
+	.COL = {16, 16},
+	.IDX = {4, 4},
+	.UV  = {8, 8},
+}
+
+Mesh :: [Vertex_Stream_Type]Stream_Ref
+Mesh_Source :: [Vertex_Stream_Type]Stream_Desc
+Vertex_Buffers :: [Vertex_Stream_Type]Stream_Buffer
+
+
+Instance_Stream_Type :: enum {
+	MODEL,
+}
+
+@(rodata)
+instance_stream_meta := [Instance_Stream_Type]Stream_Meta {
+	.MODEL = {64, 16},
+}
+
+Instance :: [Instance_Stream_Type]Stream_Ref
+Instance_Source :: [Instance_Stream_Type]Stream_Desc
+Instance_Buffers :: [Instance_Stream_Type]Stream_Buffer
+
+
+Mesh_ID :: distinct u32
+
 Mesh_Table :: struct {
 	meshes:    [dynamic]Mesh,
-	instances: [dynamic]Instance_Group,
+	instances: [dynamic]Instance,
 	sets:      map[Vertex_Stream_Set][dynamic]Mesh_ID,
+}
+
+
+upload_streams :: proc(
+	streams: ^[$Enum]Stream_Buffer,
+	arena: ^gpu.Arena,
+	cmd: gpu.Command_Buffer,
+	sources: [Enum]Stream_Desc,
+	meta: [Enum]Stream_Meta,
+	refs: ^[Enum]Stream_Ref,
+) -> (
+	set: bit_set[Enum;u32],
+) {
+	for s in Enum {
+		if sources[s].count == 0 do continue
+		set += {s}
+
+		m := meta[s]
+		d := sources[s]
+
+		elem_size := d.size != 0 ? d.size : m.size
+		alignment := d.align != 0 ? d.align : m.alignment
+		bytes := d.count * elem_size
+
+		stage := gpu.arena_alloc_raw(arena, bytes, alignment)
+		mem.copy(stage.cpu, d.data, int(bytes))
+
+		byte_offset := streams^[s].used
+		refs^[s].offset = u32(byte_offset / elem_size)
+		refs^[s].count = u32(d.count)
+
+		gpu.cmd_mem_copy_raw(
+			cmd,
+			gpu.mem_suballoc(streams^[s].ptr, byte_offset, 1, bytes),
+			stage,
+			bytes,
+		)
+
+		streams^[s].used += bytes
+	}
+
+	return set
 }
 
 
 add_mesh :: proc(
 	table: ^Mesh_Table,
-	streams: ^Vertex_Streams,
+	streams: ^Vertex_Buffers,
 	arena: ^gpu.Arena,
 	cmd: gpu.Command_Buffer,
 	source: Mesh_Source,
 ) -> Mesh_ID {
 	mesh: Mesh
-
-	set: Vertex_Stream_Set
-	#unroll for s in Vertex_Stream_Type {
-		if source[s].count > 0 {
-			set += {s}
-
-			meta := vertex_stream_meta[s]
-			desc := source[s]
-
-			elem_size := desc.size != 0 ? desc.size : meta.size
-			alignment := desc.align != 0 ? desc.align : meta.alignment
-			count := desc.count
-			bytes := count * elem_size
-
-			stage := gpu.arena_alloc_raw(arena, bytes, alignment)
-			mem.copy(stage.cpu, desc.data, int(bytes))
-
-			byte_offset := streams^[s].used
-			mesh[s].offset = u32(byte_offset / elem_size)
-			mesh[s].count = u32(count)
-
-			gpu.cmd_mem_copy_raw(
-				cmd,
-				gpu.mem_suballoc(streams^[s].ptr, byte_offset, 1, bytes),
-				stage,
-				bytes,
-			)
-
-			streams^[s].used += bytes
-		}
-	}
+	set := upload_streams(streams, arena, cmd, source, vertex_stream_meta, &mesh)
 
 	id := Mesh_ID(u32(len(table.meshes)))
 	append(&table.meshes, mesh)
-
-	append(&table.instances, Instance_Group{})
+	append(&table.instances, Instance{})
 
 	if _, ok := table.sets[set]; !ok {
 		table.sets[set] = {}
@@ -146,61 +143,31 @@ add_mesh :: proc(
 	return id
 }
 
-
 add_instances :: proc(
 	table: ^Mesh_Table,
-	streams: ^Instance_Streams,
+	streams: ^Instance_Buffers,
 	arena: ^gpu.Arena,
 	cmd: gpu.Command_Buffer,
 	mesh_id: Mesh_ID,
 	source: Instance_Source,
 ) {
-	group := table.instances[mesh_id]
-
-	#unroll for s in Instance_Stream_Type {
-		if source[s].count > 0 {
-			meta := instance_stream_meta[s]
-			desc := source[s]
-
-			elem_size := desc.size != 0 ? desc.size : meta.size
-			alignment := desc.align != 0 ? desc.align : meta.alignment
-			count := desc.count
-			bytes := count * elem_size
-
-			stage := gpu.arena_alloc_raw(arena, bytes, alignment)
-			mem.copy(stage.cpu, desc.data, int(bytes))
-
-			byte_offset := streams^[s].used
-			group[s].offset = u32(byte_offset / elem_size)
-			group[s].count = u32(count)
-
-			gpu.cmd_mem_copy_raw(
-				cmd,
-				gpu.mem_suballoc(streams^[s].ptr, byte_offset, 1, bytes),
-				stage,
-				bytes,
-			)
-
-			streams^[s].used += bytes
-		}
-	}
-
-	table.instances[mesh_id] = group
+	idx := int(mesh_id)
+	group := table.instances[idx]
+	_ = upload_streams(streams, arena, cmd, source, instance_stream_meta, &group)
+	table.instances[idx] = group
 }
-
 
 setup_scene :: proc(
 ) -> (
-	vstreams: Vertex_Streams,
-	istreams: Instance_Streams,
+	vstreams: Vertex_Buffers,
+	istreams: Instance_Buffers,
 	table: Mesh_Table,
 ) {
-
-	for &stream in vstreams {
-		stream.ptr = gpu.mem_alloc_raw(1, 1024 * 1024, 16, gpu.Memory.GPU)
+	for &s in vstreams {
+		s.ptr = gpu.mem_alloc_raw(1, 1024 * 1024, 16, gpu.Memory.GPU)
 	}
-	for &stream in istreams {
-		stream.ptr = gpu.mem_alloc_raw(1, 1024 * 1024, 16, gpu.Memory.GPU)
+	for &s in istreams {
+		s.ptr = gpu.mem_alloc_raw(1, 1024 * 1024, 16, gpu.Memory.GPU)
 	}
 
 	upload := gpu.arena_create()
@@ -268,8 +235,8 @@ Indirect_Draw :: struct #align (16) {
 render_scene_indirect :: proc(
 	cmd: gpu.Command_Buffer,
 	arena: ^gpu.Arena,
-	vstreams: ^Vertex_Streams,
-	istreams: ^Instance_Streams,
+	vstreams: ^Vertex_Buffers,
+	istreams: ^Instance_Buffers,
 	table: ^Mesh_Table,
 ) {
 	global := gpu.arena_alloc(arena, Global_Data)
@@ -289,8 +256,8 @@ render_scene_indirect :: proc(
 		indirects := make([]Indirect_Draw, draw_count, context.temp_allocator)
 
 		for id, i in mesh_ids {
-			mesh := table.meshes[id]
-			inst := table.instances[id]
+			mesh := table.meshes[int(id)]
+			inst := table.instances[int(id)]
 
 			indirects[i].cmd.index_count = mesh[.IDX].count
 			indirects[i].cmd.instance_count = inst[.MODEL].count
