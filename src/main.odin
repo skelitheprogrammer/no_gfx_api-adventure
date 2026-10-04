@@ -9,12 +9,13 @@ import "core:os"
 import sdl "vendor:sdl3"
 
 Config :: struct {
-	name:   cstring,
-	width:  c.int,
-	height: c.int,
+	name:     cstring,
+	capacity: i64,
+	width:    c.int,
+	height:   c.int,
 }
 
-default_config := Config{"TheGame", 3440, 1440}
+default_config := Config{"TheGame", 1024, 3440, 1440}
 
 
 main :: proc() {
@@ -44,7 +45,36 @@ main :: proc() {
 	}; defer for &s in opaque_pass_shaders do gpu.shader_destroy(s)
 
 	upload := gpu.arena_create(); defer gpu.arena_destroy(&upload)
-	pos, col, idx := example(&upload)
+
+
+	buffers := [Buffer_Type]gpu.ptr {
+		.POS = gpu.mem_alloc_raw(
+			size_of(buffer_ids[.POS]),
+			default_config.capacity,
+			16,
+			gpu.Memory.GPU,
+		),
+		.COL = gpu.mem_alloc_raw(
+			size_of(buffer_ids[.COL]),
+			default_config.capacity,
+			16,
+			gpu.Memory.GPU,
+		),
+		.IDX = gpu.mem_alloc_raw(
+			size_of(buffer_ids[.IDX]),
+			default_config.capacity,
+			16,
+			gpu.Memory.GPU,
+		),
+		.MDI = gpu.mem_alloc_raw(
+			size_of(buffer_ids[.MDI]),
+			default_config.capacity,
+			16,
+			gpu.Memory.GPU,
+		),
+		.CNT = gpu.mem_alloc_raw(size_of(buffer_ids[.CNT]), 1, 16, gpu.Memory.GPU),
+	}; defer for buffer in buffers do gpu.mem_free_raw(buffer)
+
 
 	ts_freq := sdl.GetPerformanceFrequency()
 	last_ts := sdl.GetPerformanceCounter()
@@ -61,7 +91,7 @@ main :: proc() {
 
 		cmd, swapchain, arena := frame_begin(&renderer, win) or_break
 
-		opaque_pass(cmd, swapchain, arena, opaque_pass_shaders, pos, col, idx)
+		opaque_pass(cmd, swapchain, arena, opaque_pass_shaders, buffers)
 
 		frame_end(&renderer, cmd)
 
