@@ -5,7 +5,6 @@ import "../src/gpu/gpu"
 FLIGHT :: 3
 Shader_Pair :: [gpu.Shader_Type_Graphics]gpu.Shader
 
-
 Renderer :: struct {
 	arenas:         [FLIGHT]gpu.Arena,
 	sem:            gpu.Semaphore,
@@ -53,6 +52,7 @@ frame_begin :: proc(
 
 	arena = &r.arenas[r.next % FLIGHT]
 	gpu.arena_free_all(arena)
+
 	cmd = gpu.commands_begin(.Main)
 	return cmd, target, arena, true
 }
@@ -63,3 +63,4 @@ frame_end :: proc(fs: ^Renderer, cmd: gpu.Command_Buffer) {
 	gpu.swapchain_present(.Main, fs.sem, fs.next)
 	fs.next += 1
 }
+
