@@ -23,7 +23,6 @@ opaque_pass :: proc(
 	vert := gpu.arena_alloc(arena, Vert_Data)
 	vert.cpu^ = {buffers[.POS].gpu.ptr, buffers[.COL].gpu.ptr}
 
-	// Single MDI call! The GPU reads the commands from the MDI buffer.
 	gpu.cmd_draw_indexed_indirect_multi_raw(
 		cmd,
 		vert,

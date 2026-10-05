@@ -42,7 +42,7 @@ main :: proc() {
 			#load("../samples/triangle/unlit.frag.spv", []u32),
 			.Fragment,
 		),
-	}; defer for &s in opaque_pass_shaders do gpu.shader_destroy(s)
+	}; defer for s in opaque_pass_shaders do gpu.shader_destroy(s)
 
 	upload := gpu.arena_create(); defer gpu.arena_destroy(&upload)
 
